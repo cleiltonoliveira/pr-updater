@@ -1,0 +1,14 @@
+name: 'PR Updater'
+description: 'Add the commit messages to the pull request description'
+author: 'Cleilton Oliveira'
+inputs:
+  accessToken:
+    description: 'you must provide GITHUB_TOKEN to this input'
+    required: true
+    default: 'false'  
+runs:
+  using: node12
+  main: dist/index.js
+branding:
+  icon: 'check'
+  color: 'blue'
