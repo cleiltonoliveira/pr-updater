@@ -1,102 +1,81 @@
 const core = require('@actions/core');
 const github = require('@actions/github');
 
-import { graphql } from '@octokit/graphql'
+const accessToken = core.getInput('accessToken')
+const octokit = github.getOctokit(accessToken);
 
-async function getCommitMessagesFromPullRequest(
-  accessToken: string,
-  repositoryOwner: string,
-  repositoryName: string,
-  pullRequestNumber: number
-): Promise<string[]> {
-  core.debug('Get messages from pull request...')
-  core.debug(` - accessToken: ${accessToken}`)
-  core.debug(` - repositoryOwner: ${repositoryOwner}`)
-  core.debug(` - repositoryName: ${repositoryName}`)
-  core.debug(` - pullRequestNumber: ${pullRequestNumber}`)
+function validateInputs() {
 
-  const query = `
-    query commitMessages(
-      $repositoryOwner: String!
-      $repositoryName: String!
-      $pullRequestNumber: Int!
-      $numberOfCommits: Int = 100
-    ) {
-      repository(owner: $repositoryOwner, name: $repositoryName) {
-        pullRequest(number: $pullRequestNumber) {
-          commits(last: $numberOfCommits) {
-            edges {
-              node {
-                commit {
-                  message
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  `
-  const variables = {
-    baseUrl: process.env['GITHUB_API_URL'] || 'https://api.github.com',
-    repositoryOwner: repositoryOwner,
-    repositoryName: repositoryName,
-    pullRequestNumber: pullRequestNumber,
-    headers: {
-      authorization: `token ${accessToken}`
-    }
+  if (!accessToken) {
+    throw new Error('Access token missing')
   }
 
-  core.debug(` - query: ${query}`)
-  core.debug(` - variables: ${JSON.stringify(variables, null, 2)}`)
-
-  const {repository} = (await graphql(query, variables)) as any
-
-  core.debug(` - response: ${JSON.stringify(repository, null, 2)}`)
-
-  let messages: string[] = []
-
-  interface EdgeItem {
-    node: {
-      commit: {
-        message: string
-      }
-    }
+  if (!github.context.payload.pull_request.number) {
+    throw new Error('No number found in the pull_request.')
   }
 
-  if (repository.pullRequest) {
-    messages = repository.pullRequest.commits.edges.map(function (
-      edge: EdgeItem
-    ): string {
-      return edge.node.commit.message
-    })
+  if (!github.context.payload.repository) {
+    throw new Error('No repository found in the payload.')
   }
-  return messages
+
+  if (!github.context.payload.repository.name) {
+    throw new Error('No name found in the repository.')
+  }
+
+  if (
+    !github.context.payload.repository.owner ||
+    (!github.context.payload.repository.owner.login &&
+      !github.context.payload.repository.owner.name)
+  ) {
+    throw new Error('No owner found in the repository.')
+  }
 }
 
-export async function updatePullRequestDescription() {
-
-  const commitMessages = await getCommitMessagesFromPullRequest(
-    core.getInput('accessToken'),
-    github.context.payload.repository.owner.name ??
-    github.context.payload.repository.owner.login,
-    github.context.payload.repository.name,
-    github.context.payload.pull_request.number
-  )
-
-  const token = core.getInput('token', { required: true });
-
-
+export async function buildDescription() {
+  validateInputs()
   const [repoOwner, repoName] = (process as any).env.GITHUB_REPOSITORY.split('/');
-
   const prNum = github.context.payload.pull_request.number;
 
-  const octokit = github.getOctokit(token);
+  const currentDescription = await getCurrentPullRequestDescription(repoOwner, repoName, prNum)
+  const commitMessages: string[] = await getCommitMessages(repoOwner, repoName, prNum);
 
-  octokit.pulls.update({
+  let messagesToAppend = ""
+
+  commitMessages.forEach(message => {
+    messagesToAppend += message + "  \n"
+  });
+
+  const newDescription = `${currentDescription || ""} \n### Commit messages  \n ${messagesToAppend}`
+
+  octokit.rest.pulls.update({
     owner: repoOwner,
     repo: repoName,
-    body: commitMessages,
-    pull_number: prNum,
+    body: newDescription,
+    pull_number: prNum
   });
+}
+
+async function getCommitMessages(owner: string, repo: string, pull_number: string) {
+
+  const commits = await octokit.rest.pulls.listCommits({
+    owner,
+    repo,
+    pull_number
+  });
+
+  const commitMessages = commits.data.map((item: any) => item.commit.message)
+
+  core.debug(` - commitMessages: ${commitMessages}`)
+
+  return commitMessages
+}
+
+async function getCurrentPullRequestDescription(owner: string, repo: string, pull_number: string) {
+  const pr = await octokit.rest.pulls.get({
+    owner,
+    repo,
+    pull_number,
+  });
+
+  return pr.data.body
 }
